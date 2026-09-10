@@ -252,7 +252,10 @@ def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_at
                 resp = get_session().get(url, verify=False, timeout=10)
                 resp.raise_for_status()
                 data = resp.json()
+                
+                logging.info(f"Batch {batch_num}, attempt {attempt+1}: received {len(data)} items")
 
+                
                 for item in data:
                     conid = item.get("conid")
                     if not conid:
