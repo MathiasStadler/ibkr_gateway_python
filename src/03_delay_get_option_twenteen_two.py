@@ -538,6 +538,7 @@ if __name__ == "__main__":
     for contract in all_contracts:
         try:
             strike = float(contract.get("strike", 0))
+            logging.info(f"Strike =>  {type(strike)}")
             if strike < current_stock_price_float:
                 lower_strikes.append(contract)
         except (ValueError, TypeError):
@@ -546,10 +547,13 @@ if __name__ == "__main__":
     # Sort absteigend (höchste Strikes unter dem Kurs zuerst)
     lower_strikes.sort(key=lambda x: float(x.get("strike", 0)), reverse=True)
 
-    top_10_underlying = lower_strikes[:10]
+    # top_10_underlying = lower_strikes[:10]
+    # only 1 for test
+    top_10_underlying = lower_strikes[:1]
     logging.info(f"Nach Filter: {len(top_10_underlying)} Contracts (max 10) mit Strike < {current_stock_price_float}")
 
     if not top_10_underlying:
         logging.warning("Keine Kontrakte mit Strike unter dem Aktienkurs gefunden. CSV wird nur Kopfzeile enthalten.")
 
+    writeResult(top_10_underlying)
     writeResult(top_10_underlying)
