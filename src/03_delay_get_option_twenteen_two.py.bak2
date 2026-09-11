@@ -230,10 +230,9 @@ def secdefInfo(conid, month, strike, right="P", exchange="SMART"):
         return (None, str(e))
 
 
-def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_attempts=3, delay=2, batch_size=10):
+def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_attempts=5, delay=5, batch_size=10):
     """
     Retrieve market data snapshot for multiple contracts.
-    Uses field-by-field retrieval with exponential backoff retry logic for reliability.
     Returns (data_dict, error) tuple.
     """
     if not conids:
@@ -275,52 +274,65 @@ def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_at
         logging.info(f"Batch {batch_num}/{total_batches} ({len(batch)} contracts)")
 
         conid_str = ",".join(str(c) for c in batch)
+        url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields=84,85,86,87,88,89,100,101,104,106&genericTickList=100,101,104,106&snapshot=0'
+        logging.info(f"url mkt_date => {url}")
 
-        # Initialize merged dict with all fields set to empty
         batch_data = {}
-        for c in batch:
-            batch_data[c] = {}
-            for f_id, f_name in field_map.items():
-                batch_data[c][f_name] = ""
-            for g_id, g_name in generic_map.items():
-                batch_data[c][g_name] = ""
+        for attempt in range(max_attempts):
+            try:
+                resp = get_session().get(url, verify=False, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                logging.info(f"Batch {batch_num}, attempt {attempt+1}: received {len(data)} items")
 
-        # FIELD-BY-FIELD retrieval with exponential backoff retry (reliable pattern from ibkr_field_retrieval.md)
-        all_field_ids = {**field_map, **generic_map}
-        for field_id, field_name in all_field_ids.items():
-            url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields={field_id}&snapshot=0'
-            logging.info(f"Fetching field {field_id} ({field_name}) for {conid_str}")
+                
+                for item in data:
+                    conid = item.get("conid")
+                    if not conid:
+                        continue
+                    if conid not in batch_data:
+                        batch_data[conid] = {}
 
-            for attempt in range(max_attempts):
-                try:
-                    resp = get_session().get(url, verify=False, timeout=10)
-                    resp.raise_for_status()
-                    data = resp.json()
+                    for f_id, f_name in field_map.items():
+                        val = item.get(f_id)
+                        logging.info(f"f_name , f_id => {val}")
+                        batch_data[conid][f_name] = val if val is not None else ""
 
-                    if not isinstance(data, list):
-                        data = [data]
+                    for g_id, g_name in generic_map.items():
+                        val = item.get(g_id)
+                        batch_data[conid][g_name] = val if val is not None else ""
 
-                    for item in data:
-                        cid = item.get("conid")
-                        if cid in batch_data:
-                            val = item.get(field_id)
-                            if val is not None and val != "":
-                                batch_data[cid][field_name] = val
+                # Second request to fill generic ticks if needed
+                if attempt == 0:
+                    time.sleep(1)
+                    resp2 = get_session().get(url, verify=False, timeout=10)
+                    resp2.raise_for_status()
+                    data2 = resp2.json()
+                    for item in data2:
+                        conid = item.get("conid")
+                        if not conid:
+                            continue
+                        if conid not in batch_data:
+                            batch_data[conid] = {}
+                        for g_id, g_name in generic_map.items():
+                            val = item.get(g_id)
+                            if val is not None:
+                                batch_data[conid][g_name] = val
 
-                    # Check if we got data for all contracts in batch
-                    filled = sum(1 for c in batch_data if batch_data[c][field_name] != "")
-                    if filled == len(batch):
-                        break
-
-                    if attempt < max_attempts - 1:
-                        wait_time = delay * (2 ** attempt)  # exponential: 2, 4, 8...
-                        logging.info(f"Field {field_id}: only {filled}/{len(batch)} filled, retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                except Exception as e:
-                    logging.error(f"Field {field_id} attempt {attempt+1} failed: {e}")
-                    if attempt < max_attempts - 1:
-                        wait_time = delay * (2 ** attempt)
-                        time.sleep(wait_time)
+                # Check completeness
+                complete = sum(1 for c in batch_data if all(f in batch_data[c] for f in field_map.values()))
+                logging.info(f"Batch {batch_num}, attempt {attempt+1}: {complete}/{len(batch)} complete")
+                if complete == len(batch):
+                    break
+                if attempt < max_attempts-1:
+                    time.sleep(delay * (attempt+1))
+            except Exception as e:
+                logging.error(f"Batch {batch_num}, attempt {attempt+1} failed: {e}")
+                if attempt < max_attempts-1:
+                    time.sleep(delay)
+                else:
+                    logging.warning(f"Batch {batch_num} failed after {max_attempts} attempts")
 
         # Format data for this batch
         for conid, quote in batch_data.items():
@@ -399,12 +411,6 @@ def writeResult(filtered_contracts):
     for conid, quote in snapshot_data.items():
         if conid in conid_to_contract:
             conid_to_contract[conid].update(quote)
-
-    # Sync merged data back to filtered_contracts list
-    for c in filtered_contracts:
-        cid = c.get("conid")
-        if cid in conid_to_contract:
-            c.update(conid_to_contract[cid])
 
     # Sign correction for Put options (if API returns positive values)
     for conid, contract in conid_to_contract.items():
@@ -584,4 +590,5 @@ if __name__ == "__main__":
     if not top_10_underlying:
         logging.warning("Keine Kontrakte mit Strike unter dem Aktienkurs gefunden. CSV wird nur Kopfzeile enthalten.")
 
+    writeResult(top_10_underlying)
     writeResult(top_10_underlying)
