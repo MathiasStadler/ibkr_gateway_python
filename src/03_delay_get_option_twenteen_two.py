@@ -288,7 +288,9 @@ def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_at
         # FIELD-BY-FIELD retrieval with exponential backoff retry (reliable pattern from ibkr_field_retrieval.md)
         all_field_ids = {**field_map, **generic_map}
         for field_id, field_name in all_field_ids.items():
-            url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields={field_id}&snapshot=0'
+            # Determine genericTickList: for bid/ask/delta/gamma/theta/vega use empty, for volume/open_interest/hist_vol/impl_vol use the field_id itself
+            generic_tick_list = field_id if field_id in generic_map else ""
+            url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields={field_id}&genericTickList={generic_tick_list}&snapshot=0'
             logging.info(f"Fetching field {field_id} ({field_name}) for {conid_str}")
 
             for attempt in range(max_attempts):
