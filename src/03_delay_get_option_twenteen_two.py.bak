@@ -48,14 +48,13 @@ def authenticate_market_data():
         return (False, str(e))
 
 
-def get_stock_price(conid, symbol, max_retries=3, retry_delay=2):
+def get_stock_price(conid, symbol):
     """
     Fetch current stock price (underlying) via REST API.
-    Retries when API returns N/A values.
     Returns (data, error) tuple.
     """
     logging.info(f"Fetching current stock price for {symbol} (conid={conid})...")
-
+    
     success, err = authenticate_market_data()
     if not success:
         return (None, f"Market data authentication failed: {err}")
@@ -65,62 +64,32 @@ def get_stock_price(conid, symbol, max_retries=3, retry_delay=2):
         "conids": conid,
         "fields": "31,84,86"   # 31 = last, 84 = bid, 86 = ask
     }
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = get_session().get(url, params=params, verify=False, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-
-            if data and isinstance(data, list) and len(data) > 0:
-                item = data[0]
-                last = item.get("31", "N/A")
-                bid  = item.get("84", "N/A")
-                ask  = item.get("86", "N/A")
-
-                # Retry only if any value is N/A
-                if last == "N/A" or bid == "N/A" or ask == "N/A":
-                    logging.warning(
-                        f"Attempt {attempt}/{max_retries}: N/A detected "
-                        f"(last={last}, bid={bid}, ask={ask}). Retrying in {retry_delay}s..."
-                    )
-                    if attempt < max_retries:
-                        time.sleep(retry_delay)
-                        continue
-                    else:
-                        logging.error(f"❌ All {max_retries} attempts returned N/A for {symbol}")
-                        return (None, f"N/A after {max_retries} retries")
-
-                # Strip possible prefixes (e.g., "C" for closed/current)
-                last_clean = last.replace("C", "")
-                bid_clean  = bid.replace("C", "")
-                ask_clean  = ask.replace("C", "")
-
-                logging.info(f"✅ {symbol} - Last: {last}, Bid: {bid}, Ask: {ask}")
-                return ({
-                    "symbol": symbol,
-                    "conid": conid,
-                    "last": last_clean,
-                    "bid": bid_clean,
-                    "ask": ask_clean,
-                    "timestamp": datetime.now().isoformat()
-                }, None)
-            else:
-                logging.warning(f"Unexpected response structure: {data}")
-                if attempt < max_retries:
-                    time.sleep(retry_delay)
-                    continue
-                return (None, "Unexpected response structure")
-
-        except Exception as e:
-            logging.error(f"Attempt {attempt}/{max_retries} failed: {e}")
-            if attempt < max_retries:
-                time.sleep(retry_delay)
-            else:
-                return (None, str(e))
-
-    return (None, f"Max retries ({max_retries}) exceeded for {symbol}")
-
+    try:
+        resp = get_session().get(url, params=params, verify=False, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data and isinstance(data, list) and len(data) > 0:
+            item = data[0]
+            last = item.get("31", "N/A")
+            bid = item.get("84", "N/A")
+            ask = item.get("86", "N/A")
+            logging.info(f"✅ {symbol} - Last: {last}, Bid: {bid}, Ask: {ask}")
+            result = {
+                "symbol": symbol,
+                "conid": conid,
+                "last": last,
+                "bid": bid,
+                "ask": ask,
+                "timestamp": datetime.now().isoformat()
+            }
+            return (result, None)
+        else:
+            logging.warning(f"Unexpected response structure: {data}")
+            return (None, "Unexpected response structure")
+    except Exception as e:
+        logging.error(f"Failed to fetch stock price for {symbol}: {e}")
+        return (None, str(e))
 
 
 def secdefSearch(symbol):
@@ -274,7 +243,7 @@ def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_at
         logging.info(f"Batch {batch_num}/{total_batches} ({len(batch)} contracts)")
 
         conid_str = ",".join(str(c) for c in batch)
-        url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields=84,85,86,87,88,89,100,101,104,106&genericTickList=100,101,104,106&snapshot=0'
+        url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields={fields}&genericTickList={generic_ticks}&snapshot=0'
         logging.info(f"url mkt_date => {url}")
 
         batch_data = {}
@@ -482,7 +451,7 @@ def save_stock_price_to_csv(stock_data):
         return (False, str(e))
 
 
-if __name__ == "__main__":
+öif __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python script.py <TICKER> [NUMBER_OF_MONTHS]")
         sys.exit(1)
