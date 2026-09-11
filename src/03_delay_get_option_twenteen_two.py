@@ -265,7 +265,7 @@ def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_at
 
                     for f_id, f_name in field_map.items():
                         val = item.get(f_id)
-                        logging.info(f"f_name , f_id => {val)
+                        logging.info(f"f_name , f_id => {val}")
                         batch_data[conid][f_name] = val if val is not None else ""
 
                     for g_id, g_name in generic_map.items():
@@ -451,7 +451,7 @@ def save_stock_price_to_csv(stock_data):
         return (False, str(e))
 
 
-if __name__ == "__main__":
+öif __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python script.py <TICKER> [NUMBER_OF_MONTHS]")
         sys.exit(1)
