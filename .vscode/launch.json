@@ -11,7 +11,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": "ALV 1 1"
+            "args": "TREX 1 1"
         }
     ]
 }

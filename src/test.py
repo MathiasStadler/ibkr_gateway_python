@@ -230,10 +230,9 @@ def secdefInfo(conid, month, strike, right="P", exchange="SMART"):
         return (None, str(e))
 
 
-def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_attempts=3, delay=2, batch_size=10):
+def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_attempts=5, delay=5, batch_size=10):
     """
     Retrieve market data snapshot for multiple contracts.
-    Uses field-by-field retrieval with exponential backoff retry logic for reliability.
     Returns (data_dict, error) tuple.
     """
     if not conids:
@@ -275,54 +274,65 @@ def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_at
         logging.info(f"Batch {batch_num}/{total_batches} ({len(batch)} contracts)")
 
         conid_str = ",".join(str(c) for c in batch)
+        url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields=84,85,86,87,88,89,100,101,104,106&genericTickList=100,101,104,106&snapshot=0'
+        logging.info(f"url mkt_date => {url}")
 
-        # Initialize merged dict with all fields set to empty
         batch_data = {}
-        for c in batch:
-            batch_data[c] = {}
-            for f_id, f_name in field_map.items():
-                batch_data[c][f_name] = ""
-            for g_id, g_name in generic_map.items():
-                batch_data[c][g_name] = ""
+        for attempt in range(max_attempts):
+            try:
+                resp = get_session().get(url, verify=False, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                logging.info(f"Batch {batch_num}, attempt {attempt+1}: received {len(data)} items")
 
-        # FIELD-BY-FIELD retrieval with exponential backoff retry (reliable pattern from ibkr_field_retrieval.md)
-        all_field_ids = {**field_map, **generic_map}
-        for field_id, field_name in all_field_ids.items():
-            # Determine genericTickList: for bid/ask/delta/gamma/theta/vega use empty, for volume/open_interest/hist_vol/impl_vol use the field_id itself
-            generic_tick_list = field_id if field_id in generic_map else ""
-            url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields={field_id}&genericTickList={generic_tick_list}&snapshot=0'
-            logging.info(f"Fetching field {field_id} ({field_name}) for {conid_str}")
+                
+                for item in data:
+                    conid = item.get("conid")
+                    if not conid:
+                        continue
+                    if conid not in batch_data:
+                        batch_data[conid] = {}
 
-            for attempt in range(max_attempts):
-                try:
-                    resp = get_session().get(url, verify=False, timeout=10)
-                    resp.raise_for_status()
-                    data = resp.json()
+                    for f_id, f_name in field_map.items():
+                        val = item.get(f_id)
+                        logging.info(f"f_name , f_id => {val}")
+                        batch_data[conid][f_name] = val if val is not None else ""
 
-                    if not isinstance(data, list):
-                        data = [data]
+                    for g_id, g_name in generic_map.items():
+                        val = item.get(g_id)
+                        batch_data[conid][g_name] = val if val is not None else ""
 
-                    for item in data:
-                        cid = item.get("conid")
-                        if cid in batch_data:
-                            val = item.get(field_id)
-                            if val is not None and val != "":
-                                batch_data[cid][field_name] = val
+                # Second request to fill generic ticks if needed
+                if attempt == 0:
+                    time.sleep(1)
+                    resp2 = get_session().get(url, verify=False, timeout=10)
+                    resp2.raise_for_status()
+                    data2 = resp2.json()
+                    for item in data2:
+                        conid = item.get("conid")
+                        if not conid:
+                            continue
+                        if conid not in batch_data:
+                            batch_data[conid] = {}
+                        for g_id, g_name in generic_map.items():
+                            val = item.get(g_id)
+                            if val is not None:
+                                batch_data[conid][g_name] = val
 
-                    # Check if we got data for all contracts in batch
-                    filled = sum(1 for c in batch_data if batch_data[c][field_name] != "")
-                    if filled == len(batch):
-                        break
-
-                    if attempt < max_attempts - 1:
-                        wait_time = delay * (2 ** attempt)  # exponential: 2, 4, 8...
-                        logging.info(f"Field {field_id}: only {filled}/{len(batch)} filled, retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                except Exception as e:
-                    logging.error(f"Field {field_id} attempt {attempt+1} failed: {e}")
-                    if attempt < max_attempts - 1:
-                        wait_time = delay * (2 ** attempt)
-                        time.sleep(wait_time)
+                # Check completeness
+                complete = sum(1 for c in batch_data if all(f in batch_data[c] for f in field_map.values()))
+                logging.info(f"Batch {batch_num}, attempt {attempt+1}: {complete}/{len(batch)} complete")
+                if complete == len(batch):
+                    break
+                if attempt < max_attempts-1:
+                    time.sleep(delay * (attempt+1))
+            except Exception as e:
+                logging.error(f"Batch {batch_num}, attempt {attempt+1} failed: {e}")
+                if attempt < max_attempts-1:
+                    time.sleep(delay)
+                else:
+                    logging.warning(f"Batch {batch_num} failed after {max_attempts} attempts")
 
         # Format data for this batch
         for conid, quote in batch_data.items():
@@ -369,10 +379,9 @@ def write_debug_log(contracts_list, filename="option_debug.log"):
         return (False, str(e))
 
 
-def writeResult(filtered_contracts, use_tws=False):
+def writeResult(filtered_contracts):
     """
     Write filtered contracts to CSV.
-    If use_tws=True, fetch market data via ib_insync TWS socket instead of REST.
     Returns (success, error) tuple.
     """
     if not filtered_contracts:
@@ -391,64 +400,6 @@ def writeResult(filtered_contracts, use_tws=False):
             logging.error(f"Failed to write empty CSV: {e}")
             return (False, str(e))
 
-    if use_tws:
-        # TWS Socket mode: request market data via ib_insync
-        from ib_insync import IB, Option
-        import math
-        ib = IB()
-        try:
-            ib.connect('127.0.0.1', 7496, clientId=99, timeout=10)
-            ib.reqMarketDataType(3)
-            logging.info("TWS connected for market data, MarketDataType=3 (Alt+Ctrl+T equivalent)")
-            tickers = []
-            for c in filtered_contracts:
-                opt = Option(c.get("symbol", "TREX"), c.get("maturityDate", "20260101"), float(c.get("strike", 0)), 'P', 'SMART')
-                ib.qualifyContracts(opt)
-                t = ib.reqMktData(opt, snapshot=True)
-                tickers.append((c, t))
-            ib.sleep(10)
-            for c, t in tickers:
-                def safe_val(v):
-                    if v is None: return ""
-                    try:
-                        if isinstance(v, float) and math.isnan(v): return ""
-                        return v
-                    except (ValueError, TypeError): return ""
-                bid_val = safe_val(t.bid) if not (isinstance(t.bid,float) and math.isnan(t.bid)) else ""
-                ask_val = safe_val(t.ask) if not (isinstance(t.ask,float) and math.isnan(t.ask)) else ""
-                c["bid"] = f"{bid_val}" if bid_val else ""
-                c["ask"] = f"{ask_val}" if ask_val else ""
-                c["delta"] = safe_val(t.delta) if getattr(t, 'delta', None) is not None else ""
-                c["gamma"] = safe_val(t.gamma) if getattr(t, 'gamma', None) is not None else ""
-                c["theta"] = safe_val(t.theta) if getattr(t, 'theta', None) is not None else ""
-                c["vega"] = safe_val(t.vega) if getattr(t, 'vega', None) is not None else ""
-                c["volume"] = int(t.volume) if t.volume and not (isinstance(t.volume,float) and math.isnan(t.volume)) else ""
-                c["open_interest"] = int(t.openInterest) if t.openInterest and not (isinstance(t.openInterest,float) and math.isnan(t.openInterest)) else ""
-                c["historical_volatility"] = safe_val(getattr(t, 'historicalVol', ""))
-                c["implied_volatility"] = safe_val(getattr(t, 'impliedVol', ""))
-                if c.get("bid") or c.get("ask"):
-                    logging.info(f"TWS data: conid={c.get('conid')}, bid={c.get('bid')}, ask={c.get('ask')}")
-            ib.disconnect()
-        except Exception as e:
-            logging.error(f"TWS data fetch error (falling back to REST): {e}")
-            # REST fallback: use the existing get_option_snapshot_bulk
-            try:
-                all_conids = [c.get("conid") for c in filtered_contracts]
-                snapshot_data, err = get_option_snapshot_bulk(all_conids)
-                if not err:
-                    conid_to_contract = {c["conid"]: c for c in filtered_contracts}
-                    for conid, quote in snapshot_data.items():
-                        if conid in conid_to_contract:
-                            conid_to_contract[conid].update(quote)
-                    for c in filtered_contracts:
-                        cid = c.get("conid")
-                        if cid in conid_to_contract:
-                            c.update(conid_to_contract[cid])
-                    logging.info("REST fallback data merge complete")
-            except Exception as rest_err:
-                logging.error(f"REST fallback also failed: {rest_err}")
-            # Continue to CSV write with whatever data we have
-
     conid_to_contract = {c["conid"]: c for c in filtered_contracts}
     all_conids = list(conid_to_contract.keys())
     logging.info(f"Fetching market data for {len(all_conids)} contracts...")
@@ -460,12 +411,6 @@ def writeResult(filtered_contracts, use_tws=False):
     for conid, quote in snapshot_data.items():
         if conid in conid_to_contract:
             conid_to_contract[conid].update(quote)
-
-    # Sync merged data back to filtered_contracts list
-    for c in filtered_contracts:
-        cid = c.get("conid")
-        if cid in conid_to_contract:
-            c.update(conid_to_contract[cid])
 
     # Sign correction for Put options (if API returns positive values)
     for conid, contract in conid_to_contract.items():
@@ -538,180 +483,115 @@ def save_stock_price_to_csv(stock_data):
 
 
 if __name__ == "__main__":
-    import sys
-    from ib_insync import IB, Stock, Option
-    
     if len(sys.argv) < 2:
-        print("Usage: python script.py <TICKER> [NUMBER_OF_MONTHS] [--tws]")
+        print("Usage: python script.py <TICKER> [NUMBER_OF_MONTHS]")
         sys.exit(1)
     ticker = sys.argv[1].upper()
-    num_months = int(sys.argv[2]) if len(sys.argv) >= 3 and sys.argv[2].isdigit() else 4
-    use_tws = "--tws" in sys.argv
+    num_months = int(sys.argv[2]) if len(sys.argv) >= 3 else 4
 
-    logging.info(f"Processing ticker: {ticker}, next {num_months} months, TWS mode: {use_tws}")
+    logging.info(f"Processing ticker: {ticker}, next {num_months} months")
     logging.info(f"Delta filter: {'ON' if FILTER_DELTA else 'OFF'} (range -0.50 to -0.30)")
 
-    if use_tws:
-        # TWS Socket mode
-        ib = IB()
-        try:
-            ib.connect('127.0.0.1', 7496, clientId=99, timeout=10)
-            ib.reqMarketDataType(3)  # Paper Trading delayed data = Alt+Ctrl+T
-            logging.info("TWS connected, MarketDataType=3")
-            
-            # Search and qualify stock
-            stock = Stock(ticker, 'SMART', 'USD')
-            ib.qualifyContracts(stock)
-            underConid = stock.conId
-            logging.info(f"Underlying conId: {underConid}")
-            
-            # Get stock price
-            t = ib.reqMktData(stock, '', False, False)
-            ib.sleep(3)
-            current_stock_price_float = t.last or t.bid or t.ask
-            if current_stock_price_float is None:
-                logging.error("Could not get stock price")
-                sys.exit(1)
-            logging.info(f"Aktueller Aktienkurs {ticker}: {current_stock_price_float}")
-            
-            # Get option params
-            params = ib.reqSecDefOptParams('', '', 'STK', underConid)
-            if not params:
-                logging.error("No option params")
-                sys.exit(1)
-            chain = params[0]
-            months = chain.expirations[:num_months]
-            logging.info(f"Selected months: {months}")
-            
-            # Collect put contracts
-            all_contracts = []
-            counter = 0
-            for month in months:
-                for strike in chain.strikes:
-                    if strike > current_stock_price_float:
-                        continue
-                    opt = Option(ticker, month, strike, 'P', 'SMART')
-                    ib.qualifyContracts(opt)
-                    if opt.conId:
-                        all_contracts.append({
-                            "conid": opt.conId,
-                            "symbol": opt.symbol,
-                            "strike": strike,
-                            "maturityDate": month,
-                            "right": "P"
-                        })
-                        counter += 1
-                        if counter >= 10:
-                            break
-                if counter >= 10:
-                    break
-            
-            # Filter: next 10 strikes below stock price
-            lower_strikes = [c for c in all_contracts if float(c.get("strike", 0)) < current_stock_price_float]
-            lower_strikes.sort(key=lambda x: float(x.get("strike", 0)), reverse=True)
-            top_10_underlying = lower_strikes[:10]
-            logging.info(f"Nach Filter: {len(top_10_underlying)} Contracts (max 10) mit Strike < {current_stock_price_float}")
-            
-            if top_10_underlying:
-                writeResult(top_10_underlying, use_tws=True)
-            else:
-                logging.warning("Keine Kontrakte gefunden")
-        finally:
-            ib.disconnect()
-    else:
-        # REST mode (original)
-        result, err = secdefSearch(ticker)
+    # Search for contract
+    result, err = secdefSearch(ticker)
+    if err:
+        logging.error(f"Failed to search for {ticker}: {err}")
+        sys.exit(1)
+    underConid = result["underConid"]
+    months = result["months"]
+
+    # Get stock price
+    stock_data, err = get_stock_price(underConid, ticker)
+    if err:
+        logging.error(f"Failed to get stock price: {err}")
+        sys.exit(1)
+    save_stock_price_to_csv(stock_data)
+
+    try:
+        current_stock_price_float = float(stock_data['last'])
+        logging.info(f"Aktueller Aktienkurs {ticker}: {current_stock_price_float}")
+    except (ValueError, TypeError):
+        logging.error("Kurs konnte nicht in float konvertiert werden. Filterung nach Strike nicht möglich.")
+        sys.exit(1)
+
+    if not months:
+        logging.error(f"No option months found for {ticker}")
+        sys.exit(1)
+
+    selected_months = months[:num_months]
+    logging.info(f"Selected months: {selected_months}")
+
+    # Collect put contracts
+    all_contracts = []
+    counter = 0
+    break_parent_for = 0
+    for month in selected_months:
+        if break_parent_for:
+            logging.info(f"Break for loop at month => {month}")
+            break
+        logging.info(f"Processing {month}...")
+        strikes, err = secdefStrikes(underConid, month)
         if err:
-            logging.error(f"Failed to search for {ticker}: {err}")
-            sys.exit(1)
-        underConid = result["underConid"]
-        months = result["months"]
-
-        stock_data, err = get_stock_price(underConid, ticker)
-        if err:
-            logging.error(f"Failed to get stock price: {err}")
-            sys.exit(1)
-        save_stock_price_to_csv(stock_data)
-
-        try:
-            current_stock_price_float = float(stock_data['last'])
-            logging.info(f"Aktueller Aktienkurs {ticker}: {current_stock_price_float}")
-        except (ValueError, TypeError):
-            logging.error("Kurs konnte nicht in float konvertiert werden. Filterung nach Strike nicht möglich.")
-            sys.exit(1)
-
-        if not months:
-            logging.error(f"No option months found for {ticker}")
-            sys.exit(1)
-
-        selected_months = months[:num_months]
-        logging.info(f"Selected months: {selected_months}")
-
-        # Collect put contracts
-        all_contracts = []
-        counter = 0
-        break_parent_for = 0
-        for month in selected_months:
+            logging.error(f"Failed to get strikes for month {month}: {err}")
+            continue
+        strikes.reverse()
+        logging.info("use the first 10 item")
+        for strike in strikes:
             if break_parent_for:
                 logging.info(f"Break for loop at month => {month}")
                 break
-            logging.info(f"Processing {month}...")
-            strikes, err = secdefStrikes(underConid, month)
-            if err:
-                logging.error(f"Failed to get strikes for month {month}: {err}")
+            strike = float(strike)
+            logging.info(f"Test Strike=>{strike}")
+
+            if strike > current_stock_price_float:
+                logging.info(f"skip this strike => {strike} - over {current_stock_price_float}")
                 continue
-            strikes.reverse()
-            logging.info("use the first 10 item")
-            for strike in strikes:
-                if break_parent_for:
-                    logging.info(f"Break for loop at month => {month}")
+
+            contracts_all, err = secdefInfo(underConid, month, strike, right="P")
+            if err:
+                logging.error(f"Failed to get option info for strike {strike}: {err}")
+                continue
+
+            for c in contracts_all:
+                all_contracts.append(c)
+                counter += 1
+                logging.info(f"all_contracts => {counter}")
+                #if break we have 10 contracts we can break the parent for loop
+                if counter >= 10:
+
+                    logging.info(f"break => {counter}")
+                    break_parent_for = 1
                     break
-                strike = float(strike)
-                logging.info(f"Test Strike=>{strike}")
+            time.sleep(1)
 
-                if strike > current_stock_price_float:
-                    logging.info(f"skip this strike => {strike} - over {current_stock_price_float}")
-                    continue
+    logging.info(f"Total contracts fetched (before filtering by strike): {len(all_contracts)}")
+    print(all_contracts)
 
-                contracts_all, err = secdefInfo(underConid, month, strike, right="P")
-                if err:
-                    logging.error(f"Failed to get option info for strike {strike}: {err}")
-                    continue
+    # Filter: Nächste 10 Strikes unter dem Aktienkurs
+    lower_strikes = []
+    logging.info(f"Typ of all_contracts {type(all_contracts)}")
+    sorted_list = sorted(all_contracts, key=itemgetter('maturityDate'))
+    print(sorted_list)
+    all_contracts = sorted_list
+    for contract in all_contracts:
+        try:
+            strike = float(contract.get("strike", 0))
+            logging.info(f"Strike =>  {type(strike)}")
+            if strike < current_stock_price_float:
+                lower_strikes.append(contract)
+        except (ValueError, TypeError):
+            logging.warning(f"Ungültiger Strike für Contract {contract.get('conid')}: {contract.get('strike')}")
 
-                for c in contracts_all:
-                    all_contracts.append(c)
-                    counter += 1
-                    logging.info(f"all_contracts => {counter}")
-                    if counter > 10:
-                        break_parent_for = 1
-                        break
-                time.sleep(1)
+    # Sort absteigend (höchste Strikes unter dem Kurs zuerst)
+    lower_strikes.sort(key=lambda x: float(x.get("strike", 0)), reverse=True)
 
-        logging.info(f"Total contracts fetched (before filtering by strike): {len(all_contracts)}")
-        print(all_contracts)
+    # top_10_underlying = lower_strikes[:10]
+    # ONLY ONE FOR A TEST
+    top_10_underlying = lower_strikes[:10]
+    logging.info(f"Nach Filter: {len(top_10_underlying)} Contracts (max 10) mit Strike < {current_stock_price_float}")
 
-        # Filter: Nächste 10 Strikes unter dem Aktienkurs
-        lower_strikes = []
-        logging.info(f"Typ of all_contracts {type(all_contracts)}")
-        sorted_list = sorted(all_contracts, key=itemgetter('maturityDate'))
-        print(sorted_list)
-        all_contracts = sorted_list
-        for contract in all_contracts:
-            try:
-                strike = float(contract.get("strike", 0))
-                logging.info(f"Strike =>  {type(strike)}")
-                if strike < current_stock_price_float:
-                    lower_strikes.append(contract)
-            except (ValueError, TypeError):
-                logging.warning(f"Ungültiger Strike für Contract {contract.get('conid')}: {contract.get('strike')}")
+    if not top_10_underlying:
+        logging.warning("Keine Kontrakte mit Strike unter dem Aktienkurs gefunden. CSV wird nur Kopfzeile enthalten.")
 
-        # Sort absteigend (höchste Strikes unter dem Kurs zuerst)
-        lower_strikes.sort(key=lambda x: float(x.get("strike", 0)), reverse=True)
-
-        top_10_underlying = lower_strikes[:10]
-        logging.info(f"Nach Filter: {len(top_10_underlying)} Contracts (max 10) mit Strike < {current_stock_price_float}")
-
-        if not top_10_underlying:
-            logging.warning("Keine Kontrakte mit Strike unter dem Aktienkurs gefunden. CSV wird nur Kopfzeile enthalten.")
-
-        writeResult(top_10_underlying, use_tws=False)
+    writeResult(top_10_underlying)
+    writeResult(top_10_underlying)
