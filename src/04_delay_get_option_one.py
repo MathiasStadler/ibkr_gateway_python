@@ -235,6 +235,8 @@ def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_at
     Retrieve market data snapshot for multiple contracts.
     Returns (data_dict, error) tuple.
     """
+
+    logging.info(f"Fetching market data snapshot for {len(conids)} contracts in batches of {batch_size}...")    
     if not conids:
         return ({}, None)
 
@@ -274,7 +276,9 @@ def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_at
         logging.info(f"Batch {batch_num}/{total_batches} ({len(batch)} contracts)")
 
         conid_str = ",".join(str(c) for c in batch)
-        url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields=84,85,86,87,88,89,100,101,104,106&genericTickList=100,101,104,106&snapshot=0'
+        # url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields=84,85,86,87,88,89,100,101,104,106&genericTickList=100,101,104,106&snapshot=0'
+        url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields=84,85,86,87,88,89,100,101,104,106&snapshot=0'
+                
         logging.info(f"url mkt_date => {url}")
 
         batch_data = {}
@@ -296,7 +300,9 @@ def get_option_snapshot_bulk(conids, fields="84,85", generic_ticks="100", max_at
 
                     for f_id, f_name in field_map.items():
                         val = item.get(f_id)
-                        logging.info(f"f_name , f_id => {val}")
+                        logging.info(f"f_name => {f_name} , f_id => {f_id} , val => {val}")
+                        # logging.info(f"f_name , f_id => {val}")
+                        # logging.info(f"f_name , f_id => {val}")
                         batch_data[conid][f_name] = val if val is not None else ""
 
                     for g_id, g_name in generic_map.items():
@@ -587,7 +593,7 @@ if __name__ == "__main__":
 
     # top_10_underlying = lower_strikes[:10]
     # ONLY ONE FOR A TEST
-    top_10_underlying = lower_strikes[:10]
+    top_10_underlying = lower_strikes[:5]
     logging.info(f"Nach Filter: {len(top_10_underlying)} Contracts (max 10) mit Strike < {current_stock_price_float}")
 
     if not top_10_underlying:
