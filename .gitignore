@@ -1,2 +1,5 @@
 src/DelayOptionContracts.csv
 src/stock_price.csv
+*csv
+src*csv
+src/option_debug.log

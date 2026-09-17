@@ -11,6 +11,9 @@ import logging
 from datetime import datetime
 from operator import itemgetter
 
+import sys
+from ib_insync import IB, Stock, Option
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s : %(lineno)d - %(message)s')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -538,8 +541,8 @@ def save_stock_price_to_csv(stock_data):
 
 
 if __name__ == "__main__":
-    import sys
-    from ib_insync import IB, Stock, Option
+    # import sys
+    # from ib_insync import IB, Stock, Option
     
     if len(sys.argv) < 2:
         print("Usage: python script.py <TICKER> [NUMBER_OF_MONTHS] [--tws]")
