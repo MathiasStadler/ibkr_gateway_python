@@ -188,7 +188,9 @@ def get_option_snapshot_bulk(conids, fields="84,85,86,87,88,89", generic_ticks="
         url = f'https://localhost:4002/v1/api/iserver/marketdata/snapshot?conids={conid_str}&fields={fields}&genericTickList={generic_ticks}&snapshot=0'
         logging.info(f"url mkt_date =>  {url}")
         batch_data = {}
-        for attempt in range(max_attempts):
+        for attempt in range(0,max_attempts):
+            logging.info(f"Batch {batch_num}, attempt {attempt+1}/{max_attempts}");
+        # for attempt in 1 .. max_attempts:
             try:
                 resp = requests.get(url=url, verify=False)
                 resp.raise_for_status()

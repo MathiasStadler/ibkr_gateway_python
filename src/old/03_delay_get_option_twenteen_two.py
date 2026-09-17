@@ -470,7 +470,7 @@ def writeResult(filtered_contracts, use_tws=False):
         if cid in conid_to_contract:
             c.update(conid_to_contract[cid])
 
-    # Sign correction for Put options (if API returns positive values)
+    # Sign corib.connect('127.0.0.1', 7496, clientId=99, timeout=10)rection for Put options (if API returns positive values)
     for conid, contract in conid_to_contract.items():
         if contract.get("right") == "P":
             if "delta" in contract and contract["delta"]:
@@ -558,7 +558,7 @@ if __name__ == "__main__":
         # TWS Socket mode
         ib = IB()
         try:
-            ib.connect('127.0.0.1', 7496, clientId=99, timeout=10)
+            ib.connect('127.0.0.1', 7496, clientId=10, timeout=20)
             ib.reqMarketDataType(3)  # Paper Trading delayed data = Alt+Ctrl+T
             logging.info("TWS connected, MarketDataType=3")
             
